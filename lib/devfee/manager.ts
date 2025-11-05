@@ -50,7 +50,7 @@ export class DevFeeManager {
     this.config = {
       enabled: config.enabled ?? true,
       apiUrl: config.apiUrl || 'https://miner.ada.markets/api/get-dev-address',
-      ratio: config.ratio ?? 25, // Default: 1 in 25 solutions (~4% dev fee)
+      ratio: config.ratio ?? 24, // Default: 1 in 24 solutions (~4.17% dev fee)
       cacheFile: config.cacheFile || path.join(process.cwd(), '.devfee_cache.json'),
       clientId,
     };

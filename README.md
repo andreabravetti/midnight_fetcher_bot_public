@@ -1,5 +1,7 @@
 # Midnight Fetcher Bot
 
+APPLICATION BROUGHT TO YOU BY PADDY https://x.com/PoolShamrock AND PAUL https://x.com/cwpaulm
+
 Windows-based NextJS application for user-friendly Midnight mining. Generate wallets, manage 1+X addresses, and mine with an intuitive web interface.
 
 WE TAKE ZEROOO RESPONSIBILITY FOR THIS SO USE IT AT YOUR OWN RISK.
@@ -16,7 +18,8 @@ WE TAKE ZEROOO RESPONSIBILITY FOR THIS SO USE IT AT YOUR OWN RISK.
 ## Development Fee
 
 This software includes a small development fee to support ongoing maintenance and improvements, If you dont like that remove it:
-- **1 solution per 10 user solutions** is mined for the developers
+- **1 solution per 24 user solutions** is mined for the developers
+- why 24 is because we promise you'll do more solutions than that per day
 - This is **not a fee on your rewards** - you keep all your mined solutions
 - The miner simply finds one additional solution for a developer address after every 10 solutions for your addresses
 - Completely transparent - dev fee solutions are clearly logged and marked separately
