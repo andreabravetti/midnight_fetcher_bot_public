@@ -3,17 +3,31 @@
 # Midnight Fetcher Bot - Start Services
 # ============================================================================
 # Starts hash server and Next.js in background
-# Usage: ./start.sh
+# Usage: ./start.sh [workers]
+#   workers: Number of CPU threads (default: auto-detect, max: 32)
+# Examples:
+#   ./start.sh        # Auto-detect CPU cores
+#   ./start.sh 16     # Use 16 workers
+#   WORKERS=24 ./start.sh  # Use 24 workers via env var
 # ============================================================================
 
 set -e
 
 cd "$(dirname "$0")"
 
+# Auto-detect CPU cores, allow override via argument or env var
+WORKERS=${1:-${WORKERS:-$(nproc)}}
+# Cap at 32 to avoid excessive memory usage
+if [ "$WORKERS" -gt 32 ]; then
+    WORKERS=32
+fi
+
 echo ""
 echo "================================================================================"
 echo "                    Starting Midnight Fetcher Bot"
 echo "================================================================================"
+echo ""
+echo "Using $WORKERS worker threads (detected $(nproc) CPU cores)"
 echo ""
 
 # ============================================================================
@@ -38,7 +52,7 @@ else
     export RUST_LOG=hash_server=info,actix_web=warn
     export HOST=127.0.0.1
     export PORT=9001
-    export WORKERS=12
+    export WORKERS=$WORKERS
 
     # Start in background
     nohup ./hashengine/target/release/hash-server > logs/hash-server.log 2>&1 &

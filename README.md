@@ -96,11 +96,15 @@ This software includes a small development fee to support ongoing maintenance an
 
 4. **Manage services** (after initial setup):
    ```bash
-   ./start.sh   # Start services in background
-   ./stop.sh    # Stop all services
-   ./status.sh  # Check if services are running
-   ./logs.sh    # View live logs
+   ./start.sh        # Start services (auto-detects CPU cores)
+   ./start.sh 16     # Start with 16 worker threads
+   ./stop.sh         # Stop all services
+   ./status.sh       # Check if services are running
+   ./logs.sh         # View live logs
    ```
+
+   **CPU Thread Configuration:** Scripts auto-detect CPU cores by default (max 32).
+   Override with: `./start.sh 24` or `WORKERS=24 ./start.sh`
 
 **Firewall Configuration** (if needed):
 ```bash

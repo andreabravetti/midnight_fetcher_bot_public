@@ -16,10 +16,19 @@
 
 set -e  # Exit on error
 
+# Auto-detect CPU cores, allow override via argument or env var
+WORKERS=${1:-${WORKERS:-$(nproc)}}
+# Cap at 32 to avoid excessive memory usage
+if [ "$WORKERS" -gt 32 ]; then
+    WORKERS=32
+fi
+
 echo ""
 echo "================================================================================"
 echo "                    Midnight Fetcher Bot - Setup"
 echo "================================================================================"
+echo ""
+echo "Detected $(nproc) CPU cores - will configure $WORKERS worker threads"
 echo ""
 
 # ============================================================================
@@ -194,11 +203,11 @@ pkill -f hash-server || true
 pkill -f "next" || true
 
 # Start hash server in background
-echo "Starting hash server on port 9001..."
+echo "Starting hash server on port 9001 with $WORKERS workers..."
 export RUST_LOG=hash_server=info,actix_web=warn
 export HOST=127.0.0.1
 export PORT=9001
-export WORKERS=12
+export WORKERS=$WORKERS
 
 nohup ./hashengine/target/release/hash-server > logs/hash-server.log 2>&1 &
 HASH_SERVER_PID=$!
