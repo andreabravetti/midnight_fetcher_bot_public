@@ -8,7 +8,9 @@
     "start": "next start -p 3001",
     "lint": "next lint",
     "build:native": "cd hashengine && npm install && npm run build",
-    "build:hash": "cd hashengine && cargo build --release --bin hash-server"
+    "build:hash": "cd hashengine && cargo build --release --bin hash-server",
+    "test:hash": "npx tsx tests/hash-engine-test.ts",
+    "benchmark:batch": "npx tsx tests/benchmark-batch-sizes.ts"
   },
   "keywords": [
     "midnight",

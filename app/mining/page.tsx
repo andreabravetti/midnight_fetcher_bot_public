@@ -130,12 +130,7 @@ function MiningDashboardContent() {
   const [workers, setWorkers] = useState<Map<number, WorkerStats>>(new Map());
 
   // Scale tab state
-  const [scaleSpecs, setScaleSpecs] = useState<any>(null);
-  const [scaleRecommendations, setScaleRecommendations] = useState<any>(null);
-  const [scaleLoading, setScaleLoading] = useState(false);
-  const [scaleError, setScaleError] = useState<string | null>(null);
-  const [editedWorkerThreads, setEditedWorkerThreads] = useState<number | null>(null);
-  const [editedBatchSize, setEditedBatchSize] = useState<number | null>(null);
+  const [cpuPercentage, setCpuPercentage] = useState<number>(90);
   const [workerGroupingMode, setWorkerGroupingMode] = useState<'auto' | 'all-on-one' | 'grouped'>('auto');
   const [workersPerAddress, setWorkersPerAddress] = useState<number>(5);
   const [initialWorkerGroupingMode, setInitialWorkerGroupingMode] = useState<'auto' | 'all-on-one' | 'grouped'>('auto');
@@ -293,9 +288,19 @@ function MiningDashboardContent() {
       } else if (data.type === 'solution_result') {
         if (data.success) {
           addLog(`✅ Solution for address ${data.addressIndex} ACCEPTED! ${data.message}`, 'success');
+          // Refresh history immediately to show the new solution
+          fetchHistory();
         } else {
           addLog(`❌ Solution for address ${data.addressIndex} REJECTED: ${data.message}`, 'error');
         }
+      } else if (data.type === 'solution_found') {
+        // SimplifiedOrchestrator event
+        addLog(`💎 Solution found! Address: ${data.address?.slice(0, 20)}... Nonce: ${data.nonce}`, 'success');
+      } else if (data.type === 'solution_submitted') {
+        // SimplifiedOrchestrator event
+        addLog(`✅ Solution submitted successfully for address ${data.address?.slice(0, 20)}...`, 'success');
+        // Refresh history immediately to show the new solution
+        fetchHistory();
       } else if (data.type === 'worker_update') {
         // Update worker stats
         setWorkers(prev => {
@@ -491,42 +496,6 @@ function MiningDashboardContent() {
     }
   };
 
-  const fetchScaleData = async () => {
-    setScaleLoading(true);
-    setScaleError(null);
-
-    try {
-      const response = await fetch('/api/system/specs');
-      const data = await response.json();
-
-      if (data.success) {
-        setScaleSpecs(data.specs);
-        setScaleRecommendations(data.recommendations);
-        // Initialize edited values with current values
-        setEditedWorkerThreads(data.recommendations.workerThreads.current);
-        setEditedBatchSize(data.recommendations.batchSize.current);
-      } else {
-        setScaleError(data.error || 'Failed to load system specifications');
-      }
-
-      // Also load current worker grouping config
-      const statusResponse = await fetch('/api/mining/status');
-      const statusData = await statusResponse.json();
-      if (statusData.config) {
-        const mode = statusData.config.workerGroupingMode || 'auto';
-        const workers = statusData.config.workersPerAddress || 5;
-        setWorkerGroupingMode(mode);
-        setWorkersPerAddress(workers);
-        setInitialWorkerGroupingMode(mode);
-        setInitialWorkersPerAddress(workers);
-      }
-    } catch (err: any) {
-      setScaleError(err.message || 'Failed to connect to API');
-    } finally {
-      setScaleLoading(false);
-    }
-  };
-
   const fetchDevFeeStatus = async () => {
     setDevFeeLoading(true);
     try {
@@ -574,56 +543,6 @@ function MiningDashboardContent() {
     }
   };
 
-  const applyPerformanceChanges = async () => {
-    if (!editedWorkerThreads || !editedBatchSize) {
-      return;
-    }
-
-    setApplyingChanges(true);
-    try {
-      const response = await fetch('/api/mining/update-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workerThreads: editedWorkerThreads,
-          batchSize: editedBatchSize,
-          workerGroupingMode,
-          workersPerAddress,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        // Close confirmation dialog
-        setShowApplyConfirmation(false);
-
-        // Restart mining with new configuration
-        await handleStopMining();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await handleStartMining();
-
-        // Refresh scale data to show updated values
-        await fetchScaleData();
-      } else {
-        setScaleError(data.error || 'Failed to apply changes');
-      }
-    } catch (err: any) {
-      setScaleError(err.message || 'Failed to apply changes');
-    } finally {
-      setApplyingChanges(false);
-    }
-  };
-
-  const hasChanges = () => {
-    if (!scaleRecommendations) return false;
-    return (
-      editedWorkerThreads !== scaleRecommendations.workerThreads.current ||
-      editedBatchSize !== scaleRecommendations.batchSize.current ||
-      workerGroupingMode !== initialWorkerGroupingMode ||
-      workersPerAddress !== initialWorkersPerAddress
-    );
-  };
 
   const copyToClipboard = async (text: string, id: string) => {
     try {
@@ -677,13 +596,6 @@ function MiningDashboardContent() {
   useEffect(() => {
     if (activeTab === 'addresses') {
       fetchAddresses();
-    }
-  }, [activeTab]);
-
-  // Load scale data when switching to scale tab
-  useEffect(() => {
-    if (activeTab === 'scale') {
-      fetchScaleData();
     }
   }, [activeTab]);
 
@@ -2333,489 +2245,97 @@ function MiningDashboardContent() {
         {/* Scale Tab */}
         {activeTab === 'scale' && (
           <div className="space-y-6">
-            {scaleLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <div className="text-center space-y-4">
-                  <RefreshCw className="w-12 h-12 animate-spin text-blue-500 mx-auto" />
-                  <p className="text-lg text-gray-400">Analyzing system specifications...</p>
+            {/* Header */}
+            <div>
+              <h2 className="text-2xl font-bold mb-2">Hash Engine CPU Configuration</h2>
+              <p className="text-gray-400">
+                Control CPU usage by editing the configuration file
+              </p>
+            </div>
+
+            {/* CPU Configuration Card */}
+            <Card variant="bordered">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Cpu className="w-5 h-5 text-blue-400" />
+                  CPU Percentage Configuration
+                </CardTitle>
+                <CardDescription>
+                  Edit hash-config.json to set CPU usage percentage
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Config File Location */}
+                <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+                  <div className="flex items-start gap-3">
+                    <Settings className="w-5 h-5 text-blue-400 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold mb-2">Configuration File</p>
+                      <code className="text-xs bg-black/30 px-3 py-2 rounded block text-gray-300">
+                        hashengine/hash-config.json
+                      </code>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ) : scaleError || !scaleSpecs || !scaleRecommendations ? (
-              <div className="space-y-4">
-                <Alert variant="error">
-                  <AlertCircle className="w-5 h-5" />
-                  <span>{scaleError || 'Failed to load system specifications'}</span>
-                </Alert>
-                <Button onClick={fetchScaleData} variant="primary">
-                  <RefreshCw className="w-4 h-4" />
-                  Load System Specs
-                </Button>
-              </div>
-            ) : (
-              <>
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-2xl font-bold mb-2">Performance Scaling</h2>
-                    <p className="text-gray-400">
-                      Optimize BATCH_SIZE and workerThreads based on your hardware
+
+                {/* Instructions */}
+                <div className="space-y-4">
+                  <h3 className="text-sm font-semibold">How to Configure CPU Usage:</h3>
+
+                  <ol className="space-y-3 text-sm text-gray-300">
+                    <li className="flex gap-3">
+                      <span className="text-blue-400 font-bold">1.</span>
+                      <div>
+                        <p className="mb-2">Open the config file in a text editor:</p>
+                        <code className="text-xs bg-black/30 px-3 py-1.5 rounded block text-gray-300">
+                          hashengine/hash-config.json
+                        </code>
+                      </div>
+                    </li>
+
+                    <li className="flex gap-3">
+                      <span className="text-blue-400 font-bold">2.</span>
+                      <div>
+                        <p className="mb-2">Edit the <code className="text-xs bg-black/30 px-2 py-0.5 rounded">cpu_percentage</code> value (1-100):</p>
+                        <div className="bg-black/30 p-3 rounded text-xs font-mono">
+                          <div className="text-gray-500">{"{"}</div>
+                          <div className="ml-4">
+                            <span className="text-green-400">"cpu_percentage"</span>
+                            <span className="text-gray-400">: </span>
+                            <span className="text-yellow-400">90</span>
+                          </div>
+                          <div className="text-gray-500">{"}"}</div>
+                        </div>
+                        <p className="mt-2 text-xs text-gray-400">
+                          • <strong>90</strong> = Use 90% of CPU cores (recommended for dedicated mining)<br />
+                          • <strong>50</strong> = Use 50% of CPU cores (good for multi-tasking)<br />
+                          • <strong>100</strong> = Use all CPU cores (maximum performance)
+                        </p>
+                      </div>
+                    </li>
+
+                    <li className="flex gap-3">
+                      <span className="text-blue-400 font-bold">3.</span>
+                      <div>
+                        <p>Save the file and restart the hash engine for changes to take effect</p>
+                      </div>
+                    </li>
+                  </ol>
+                </div>
+
+                {/* Info Alert */}
+                <Alert variant="info">
+                  <Info className="w-4 h-4" />
+                  <div className="text-sm">
+                    <p className="font-semibold mb-1">Note:</p>
+                    <p className="text-gray-300">
+                      The hash engine reads this configuration file on startup. After editing the file,
+                      restart the hash engine for the new CPU percentage to take effect.
                     </p>
                   </div>
-                  <Button onClick={fetchScaleData} variant="outline">
-                    <RefreshCw className="w-4 h-4" />
-                    Refresh
-                  </Button>
-                </div>
-
-                {/* System Tier Badge */}
-                <div className="flex justify-center">
-                  <div className={cn(
-                    'inline-flex items-center gap-3 px-6 py-3 rounded-full border',
-                    scaleRecommendations.systemTier === 'high-end' && 'text-green-400 bg-green-900/20 border-green-700/50',
-                    scaleRecommendations.systemTier === 'mid-range' && 'text-blue-400 bg-blue-900/20 border-blue-700/50',
-                    scaleRecommendations.systemTier === 'entry-level' && 'text-yellow-400 bg-yellow-900/20 border-yellow-700/50',
-                    scaleRecommendations.systemTier === 'low-end' && 'text-orange-400 bg-orange-900/20 border-orange-700/50'
-                  )}>
-                    <Zap className="w-5 h-5" />
-                    <span className="text-lg font-semibold">
-                      System Tier: {scaleRecommendations.systemTier.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
-                    </span>
-                  </div>
-                </div>
-
-                {/* System Specifications */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <Card variant="bordered">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2 text-lg">
-                        <Cpu className="w-5 h-5 text-blue-400" />
-                        CPU
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Model:</span>
-                        <span className="font-mono text-white truncate ml-2" title={scaleSpecs.cpu.model}>
-                          {scaleSpecs.cpu.model.substring(0, 25)}...
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Cores:</span>
-                        <span className="font-mono text-white">{scaleSpecs.cpu.cores}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Speed:</span>
-                        <span className="font-mono text-white">{scaleSpecs.cpu.speed} MHz</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Load (1m):</span>
-                        <span className="font-mono text-white">{scaleSpecs.cpu.loadAverage[0].toFixed(2)}</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card variant="bordered">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2 text-lg">
-                        <Memory className="w-5 h-5 text-purple-400" />
-                        Memory
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Total:</span>
-                        <span className="font-mono text-white">{scaleSpecs.memory.total} GB</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Used:</span>
-                        <span className="font-mono text-white">{scaleSpecs.memory.used} GB</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Free:</span>
-                        <span className="font-mono text-white">{scaleSpecs.memory.free} GB</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Usage:</span>
-                        <span className="font-mono text-white">{scaleSpecs.memory.usagePercent}%</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card variant="bordered">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2 text-lg">
-                        <Settings className="w-5 h-5 text-green-400" />
-                        System
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Platform:</span>
-                        <span className="font-mono text-white">{scaleSpecs.system.platform}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Architecture:</span>
-                        <span className="font-mono text-white">{scaleSpecs.system.arch}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Uptime:</span>
-                        <span className="font-mono text-white">
-                          {Math.floor(scaleSpecs.system.uptime / 3600)}h {Math.floor((scaleSpecs.system.uptime % 3600) / 60)}m
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                {/* Warnings */}
-                {scaleRecommendations.warnings.length > 0 && (
-                  <div className="space-y-2">
-                    {scaleRecommendations.warnings.map((warning: string, index: number) => (
-                      <Alert
-                        key={index}
-                        variant={warning.startsWith('✅') ? 'success' : warning.startsWith('💡') ? 'info' : 'warning'}
-                      >
-                        <span>{warning}</span>
-                      </Alert>
-                    ))}
-                  </div>
-                )}
-
-                {/* Worker Distribution Configuration */}
-                <Card variant="elevated">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Settings className="w-6 h-6 text-blue-400" />
-                      Worker Distribution Strategy
-                    </CardTitle>
-                    <CardDescription>
-                      Configure how workers are assigned to addresses
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="space-y-2">
-                        <label className="block text-sm font-medium text-gray-300">Distribution Mode</label>
-                        <select
-                          value={workerGroupingMode}
-                          onChange={(e) => setWorkerGroupingMode(e.target.value as any)}
-                          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                          <option value="auto">Auto (Recommended)</option>
-                          <option value="all-on-one">All Workers on One Address</option>
-                          <option value="grouped">Custom Groups</option>
-                        </select>
-                      </div>
-
-                      {workerGroupingMode === 'grouped' && (
-                        <div className="space-y-2">
-                          <label className="block text-sm font-medium text-gray-300">
-                            Min Workers per Address
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max={editedWorkerThreads || 11}
-                            value={workersPerAddress}
-                            onChange={(e) => setWorkersPerAddress(Math.max(1, Math.min(editedWorkerThreads || 256, parseInt(e.target.value) || 1)))}
-                            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                      )}
-
-                      <div className="space-y-2">
-                        <label className="block text-sm font-medium text-gray-300">Parallel Groups</label>
-                        <div className="bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-2 text-center">
-                          <span className="text-2xl font-bold text-blue-400">
-                            {workerGroupingMode === 'all-on-one' ? 1 : Math.floor((editedWorkerThreads || 11) / (workerGroupingMode === 'grouped' ? workersPerAddress : 5))}
-                          </span>
-                          <span className="text-sm text-gray-400 ml-2">(addresses at once)</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {workerGroupingMode === 'auto' && (
-                      <Alert variant="info">
-                        <Info className="w-4 h-4" />
-                        <span className="text-sm">
-                          Auto mode uses ~5 workers per address for optimal balance between speed and parallelization.
-                        </span>
-                      </Alert>
-                    )}
-
-                    {workerGroupingMode === 'all-on-one' && (
-                      <Alert variant="info">
-                        <Info className="w-4 h-4" />
-                        <span className="text-sm">
-                          All workers focus on ONE address at a time for maximum solving speed per address.
-                        </span>
-                      </Alert>
-                    )}
-
-                    {workerGroupingMode === 'grouped' && (
-                      <Alert variant="info">
-                        <Info className="w-4 h-4" />
-                        <span className="text-sm">
-                          With {editedWorkerThreads || 11} workers and min {workersPerAddress}:
-                          <strong> {Math.floor((editedWorkerThreads || 11) / workersPerAddress)} addresses mining in parallel</strong>
-                        </span>
-                      </Alert>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* Recommendations - Visual Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Worker Threads Card */}
-                  <Card variant="elevated">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Cpu className="w-6 h-6 text-blue-400" />
-                        Worker Threads
-                      </CardTitle>
-                      <CardDescription>
-                        Number of parallel mining threads
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg border-2 border-yellow-500/50">
-                          <span className="text-gray-400 font-semibold">Edit Value:</span>
-                          <input
-                            type="number"
-                            min="1"
-                            max={scaleRecommendations.workerThreads.max}
-                            value={editedWorkerThreads || ''}
-                            onChange={(e) => setEditedWorkerThreads(parseInt(e.target.value) || 1)}
-                            className="w-24 px-3 py-2 text-2xl font-bold text-center bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-yellow-500 text-white"
-                          />
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-green-900/20 border border-green-700/50 rounded-lg cursor-pointer hover:bg-green-900/30 transition-colors"
-                          onClick={() => setEditedWorkerThreads(scaleRecommendations.workerThreads.optimal)}>
-                          <div className="flex items-center gap-2">
-                            <CheckCircle2 className="w-5 h-5 text-green-400" />
-                            <span className="text-green-400 font-semibold">Optimal:</span>
-                          </div>
-                          <span className="text-2xl font-bold text-green-400">
-                            {scaleRecommendations.workerThreads.optimal}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-blue-900/20 border border-blue-700/50 rounded-lg cursor-pointer hover:bg-blue-900/30 transition-colors"
-                          onClick={() => setEditedWorkerThreads(scaleRecommendations.workerThreads.conservative)}>
-                          <span className="text-blue-400">Conservative:</span>
-                          <span className="text-xl font-bold text-blue-400">
-                            {scaleRecommendations.workerThreads.conservative}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-orange-900/20 border border-orange-700/50 rounded-lg cursor-pointer hover:bg-orange-900/30 transition-colors"
-                          onClick={() => setEditedWorkerThreads(scaleRecommendations.workerThreads.max)}>
-                          <span className="text-orange-400">Maximum:</span>
-                          <span className="text-xl font-bold text-orange-400">
-                            {scaleRecommendations.workerThreads.max}
-                          </span>
-                        </div>
-                      </div>
-
-                      <Alert variant="info">
-                        <Info className="w-4 h-4" />
-                        <span className="text-sm">{scaleRecommendations.workerThreads.explanation}</span>
-                      </Alert>
-
-                      <div className="text-xs text-gray-500 space-y-1">
-                        <p><strong>Location:</strong> lib/mining/orchestrator.ts:42</p>
-                        <p><strong>Variable:</strong> <code className="bg-gray-800 px-1 py-0.5 rounded">private workerThreads = 12;</code></p>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* Batch Size Card */}
-                  <Card variant="elevated">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Gauge className="w-6 h-6 text-purple-400" />
-                        Batch Size
-                      </CardTitle>
-                      <CardDescription>
-                        Number of hashes computed per batch
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg border-2 border-yellow-500/50">
-                          <span className="text-gray-400 font-semibold">Edit Value:</span>
-                          <input
-                            type="number"
-                            min="50"
-                            max={scaleRecommendations.batchSize.max}
-                            step="50"
-                            value={editedBatchSize || ''}
-                            onChange={(e) => setEditedBatchSize(parseInt(e.target.value) || 50)}
-                            className="w-24 px-3 py-2 text-2xl font-bold text-center bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-yellow-500 text-white"
-                          />
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-green-900/20 border border-green-700/50 rounded-lg cursor-pointer hover:bg-green-900/30 transition-colors"
-                          onClick={() => setEditedBatchSize(scaleRecommendations.batchSize.optimal)}>
-                          <div className="flex items-center gap-2">
-                            <CheckCircle2 className="w-5 h-5 text-green-400" />
-                            <span className="text-green-400 font-semibold">Optimal:</span>
-                          </div>
-                          <span className="text-2xl font-bold text-green-400">
-                            {scaleRecommendations.batchSize.optimal}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-blue-900/20 border border-blue-700/50 rounded-lg cursor-pointer hover:bg-blue-900/30 transition-colors"
-                          onClick={() => setEditedBatchSize(scaleRecommendations.batchSize.conservative)}>
-                          <span className="text-blue-400">Conservative:</span>
-                          <span className="text-xl font-bold text-blue-400">
-                            {scaleRecommendations.batchSize.conservative}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-orange-900/20 border border-orange-700/50 rounded-lg cursor-pointer hover:bg-orange-900/30 transition-colors"
-                          onClick={() => setEditedBatchSize(scaleRecommendations.batchSize.max)}>
-                          <span className="text-orange-400">Maximum:</span>
-                          <span className="text-xl font-bold text-orange-400">
-                            {scaleRecommendations.batchSize.max}
-                          </span>
-                        </div>
-                      </div>
-
-                      <Alert variant="info">
-                        <Info className="w-4 h-4" />
-                        <span className="text-sm">{scaleRecommendations.batchSize.explanation}</span>
-                      </Alert>
-
-                      <div className="text-xs text-gray-500 space-y-1">
-                        <p><strong>Location:</strong> lib/mining/orchestrator.ts:597</p>
-                        <p><strong>Variable:</strong> <code className="bg-gray-800 px-1 py-0.5 rounded">const BATCH_SIZE = 350;</code></p>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                {/* Apply Changes Button */}
-                {hasChanges() && (
-                  <div className="flex justify-center">
-                    <Button
-                      onClick={() => setShowApplyConfirmation(true)}
-                      variant="primary"
-                      className="px-8 py-4 text-lg"
-                      disabled={applyingChanges}
-                    >
-                      {applyingChanges ? (
-                        <>
-                          <RefreshCw className="w-5 h-5 animate-spin" />
-                          Applying Changes...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="w-5 h-5" />
-                          Apply Changes & Restart Mining
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                )}
-
-                {/* Confirmation Dialog */}
-                {showApplyConfirmation && (
-                  <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <Card variant="elevated" className="max-w-lg w-full">
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-xl">
-                          <AlertCircle className="w-6 h-6 text-yellow-400" />
-                          Confirm Performance Changes
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        <p className="text-gray-300">
-                          You are about to apply the following performance configuration changes:
-                        </p>
-
-                        <div className="space-y-2 bg-gray-800/50 p-4 rounded-lg border border-gray-700">
-                          <div className="flex items-center justify-between">
-                            <span className="text-gray-400">Worker Threads:</span>
-                            <div className="flex items-center gap-2">
-                              <span className="text-white font-mono">{scaleRecommendations.workerThreads.current}</span>
-                              <span className="text-gray-500">→</span>
-                              <span className="text-green-400 font-mono font-bold">{editedWorkerThreads}</span>
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-gray-400">Batch Size:</span>
-                            <div className="flex items-center gap-2">
-                              <span className="text-white font-mono">{scaleRecommendations.batchSize.current}</span>
-                              <span className="text-gray-500">→</span>
-                              <span className="text-green-400 font-mono font-bold">{editedBatchSize}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <Alert variant="warning">
-                          <AlertCircle className="w-4 h-4" />
-                          <span className="text-sm">
-                            Mining will be stopped and restarted automatically with the new configuration.
-                            This may take a few seconds.
-                          </span>
-                        </Alert>
-
-                        <div className="flex gap-3 justify-end">
-                          <Button
-                            onClick={() => setShowApplyConfirmation(false)}
-                            variant="outline"
-                            disabled={applyingChanges}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            onClick={applyPerformanceChanges}
-                            variant="primary"
-                            disabled={applyingChanges}
-                          >
-                            {applyingChanges ? (
-                              <>
-                                <RefreshCw className="w-4 h-4 animate-spin" />
-                                Applying...
-                              </>
-                            ) : (
-                              <>
-                                <CheckCircle2 className="w-4 h-4" />
-                                Apply & Restart
-                              </>
-                            )}
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
-                )}
-
-                {/* Performance Notes */}
-                <Card variant="glass">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <TrendingUp className="w-5 h-5 text-yellow-400" />
-                      Performance Tuning Tips
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <ul className="space-y-2 text-sm text-gray-300">
-                      {scaleRecommendations.performanceNotes.map((note: string, index: number) => (
-                        <li key={index} className="flex items-start gap-2">
-                          <span className="text-blue-400 mt-0.5">•</span>
-                          <span>{note}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </CardContent>
-                </Card>
-              </>
-            )}
+                </Alert>
+              </CardContent>
+            </Card>
           </div>
         )}
 

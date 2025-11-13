@@ -15,6 +15,7 @@ export interface Receipt {
   hash: string;
   crypto_receipt?: any;
   isDevFee?: boolean; // Flag to mark dev fee solutions
+  note?: string; // Optional note for special cases (e.g., duplicate solutions)
 }
 
 // Alias for compatibility with stats module

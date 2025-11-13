@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { miningOrchestrator } from '@/lib/mining/orchestrator';
+import { miningOrchestrator } from '@/lib/mining/orchestrator-simple';
 
 export async function POST() {
   try {

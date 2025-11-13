@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { miningOrchestrator } from '@/lib/mining/orchestrator';
+import { miningOrchestrator } from '@/lib/mining/orchestrator-simple';
 import { MiningEvent } from '@/lib/mining/types';
 
 export async function GET() {
@@ -31,7 +31,11 @@ export async function GET() {
 
       miningOrchestrator.on('status', onEvent);
       miningOrchestrator.on('solution', onEvent);
+      miningOrchestrator.on('solution_found', onEvent); // SimplifiedOrchestrator emits this
+      miningOrchestrator.on('solution_submitted', onEvent); // SimplifiedOrchestrator emits this
       miningOrchestrator.on('stats', onEvent);
+      miningOrchestrator.on('stats_update', onEvent); // SimplifiedOrchestrator emits this
+      miningOrchestrator.on('cpu_mode_changed', onEvent); // SimplifiedOrchestrator emits this
       miningOrchestrator.on('error', onEvent);
       miningOrchestrator.on('mining_start', onEvent);
       miningOrchestrator.on('hash_progress', onEvent);
@@ -60,7 +64,11 @@ export async function GET() {
         clearInterval(statsInterval);
         miningOrchestrator.off('status', onEvent);
         miningOrchestrator.off('solution', onEvent);
+        miningOrchestrator.off('solution_found', onEvent);
+        miningOrchestrator.off('solution_submitted', onEvent);
         miningOrchestrator.off('stats', onEvent);
+        miningOrchestrator.off('stats_update', onEvent);
+        miningOrchestrator.off('cpu_mode_changed', onEvent);
         miningOrchestrator.off('error', onEvent);
         miningOrchestrator.off('mining_start', onEvent);
         miningOrchestrator.off('hash_progress', onEvent);

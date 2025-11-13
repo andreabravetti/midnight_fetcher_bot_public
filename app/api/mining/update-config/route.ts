@@ -3,11 +3,11 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { miningOrchestrator } from '@/lib/mining/orchestrator';
+import { miningOrchestrator } from '@/lib/mining/orchestrator-simple';
 
 export async function POST(req: NextRequest) {
   try {
-    const { workerThreads, batchSize, workerGroupingMode, workersPerAddress } = await req.json();
+    const { workerThreads, batchSize, workerGroupingMode, workersPerAddress, cpuMode } = await req.json();
 
     // Validate workerThreads
     if (workerThreads !== undefined) {
@@ -49,12 +49,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Validate cpuMode
+    if (cpuMode !== undefined) {
+      if (!['normal', 'max'].includes(cpuMode)) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid cpuMode (must be normal or max)' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Update configuration in the orchestrator
     miningOrchestrator.updateConfiguration({
       workerThreads,
       batchSize,
       workerGroupingMode,
       workersPerAddress,
+      cpuMode,
     });
 
     // Get updated configuration

@@ -9,6 +9,57 @@ interface ConnectionPoolConfig {
   retryDelayMs?: number;
 }
 
+// === NEW: Autonomous Mining Interfaces ===
+
+export interface ChallengeData {
+  challenge_id: string;
+  difficulty: string;
+  no_pre_mine: string;
+  latest_submission: string;
+  no_pre_mine_hour: string;
+}
+
+export interface MineRequest {
+  worker_id: number;
+  address: string;
+  challenge: ChallengeData;
+  batch_size: number;
+  nonce_start: string; // String to support large bigint values
+}
+
+export interface Solution {
+  nonce: string;
+  hash: string;
+  preimage: string;
+}
+
+export interface MineResponse {
+  solutions: Solution[];
+  hashes_computed: number;
+}
+
+// === NEW: Continuous Mining Interfaces ===
+
+export interface StartMiningRequest {
+  worker_id: number;
+  address: string;
+  challenge: ChallengeData;
+}
+
+export interface MiningStatsResponse {
+  total_hashes: number;
+  solutions_found: number;
+  hash_rate: number;  // Hashes per second
+  uptime_seconds: number;
+  mining_active: boolean;
+  cpu_mode: string;  // "max" or "normal"
+}
+
+export interface SetCpuModeResponse {
+  mode: string;
+  thread_count: number;
+}
+
 export class HashClient {
   private baseUrl: string;
   private axiosInstance: AxiosInstance;
@@ -232,6 +283,131 @@ export class HashClient {
       } else {
         console.error(`[HashClient] Failed to kill workers: ${err.message}`);
       }
+    }
+  }
+
+  /**
+   * NEW: Autonomous mining endpoint
+   * Sends mining parameters to hash service which generates preimages, hashes them,
+   * validates difficulty, and returns only valid solutions.
+   *
+   * This eliminates transmission of ~300 hashes per batch (99% network traffic reduction).
+   */
+  async mineBatch(request: MineRequest): Promise<MineResponse> {
+    let lastError: Error | null = null;
+
+    // Longer timeout for mining operations (scales with batch size)
+    const batchTimeout = Math.max(30000, request.batch_size * 20);
+
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        const response = await this.axiosInstance.post('/mine',
+          request,
+          {
+            timeout: batchTimeout,
+            // Use the persistent keep-alive connection pool
+          }
+        );
+        return response.data;
+      } catch (err: any) {
+        lastError = err;
+
+        // Don't retry on certain errors
+        if (err.response?.status === 400 || err.response?.status === 404) {
+          throw new Error(`Failed to mine batch: ${err.response.data?.error || err.message}`);
+        }
+
+        // Retry on connection issues, timeouts, or 503/408
+        const isRetriable =
+          err.code === 'ECONNREFUSED' ||
+          err.code === 'ECONNRESET' ||
+          err.code === 'ETIMEDOUT' ||
+          err.code === 'ECONNABORTED' ||
+          err.message.includes('socket hang up') ||
+          err.response?.status === 503 ||
+          err.response?.status === 408;
+
+        if (!isRetriable || attempt === this.maxRetries - 1) {
+          break;
+        }
+
+        // Exponential backoff with jitter
+        const delay = this.retryDelayMs * Math.pow(2, attempt) + Math.random() * 100;
+        await this.sleep(delay);
+      }
+    }
+
+    if (lastError) {
+      const errMsg = (lastError as any).response?.data?.error || (lastError as any).message || 'Unknown error';
+      throw new Error(`Failed to mine batch after ${this.maxRetries} attempts: ${errMsg}`);
+    }
+
+    throw new Error('Failed to mine batch: Unknown error');
+  }
+
+  /**
+   * NEW: Start continuous mining
+   * This is a long-running call that mines continuously until a solution is found.
+   * The hash service does all the work - generating preimages, hashing, validating.
+   *
+   * This call will block until:
+   * - A solution is found (returns the solution)
+   * - An error occurs (throws error)
+   * - The connection times out
+   */
+  async startContinuousMining(request: StartMiningRequest): Promise<MineResponse> {
+    console.log(`[HashClient] Starting continuous mining for worker ${request.worker_id} on address ${request.address}`);
+
+    try {
+      const response = await this.axiosInstance.post('/start-mining',
+        request,
+        {
+          timeout: 0, // No timeout - mine until solution found
+          // Use the persistent keep-alive connection pool
+        }
+      );
+
+      console.log(`[HashClient] Worker ${request.worker_id}: Solution found!`);
+      return response.data;
+    } catch (err: any) {
+      const errMsg = (err as any).response?.data?.error || (err as any).message || 'Unknown error';
+      throw new Error(`Continuous mining failed: ${errMsg}`);
+    }
+  }
+
+  /**
+   * NEW: Get mining statistics
+   * Returns current hash rate, total hashes computed, and solutions found.
+   * This should be called periodically (every ~20 seconds) to monitor performance.
+   */
+  async getStats(): Promise<MiningStatsResponse> {
+    try {
+      const response = await this.axiosInstance.get('/stats', {
+        timeout: 5000,
+      });
+      return response.data;
+    } catch (err: any) {
+      throw new Error(`Failed to get stats: ${err.message}`);
+    }
+  }
+
+  /**
+   * NEW: Set CPU usage mode
+   * Controls how many CPU cores the hash service uses:
+   * - "max": Use all CPU cores (100% utilization)
+   * - "normal": Use 50% of CPU cores (allows user to still use computer)
+   */
+  async setCpuMode(mode: 'max' | 'normal'): Promise<SetCpuModeResponse> {
+    try {
+      console.log(`[HashClient] Setting CPU mode to: ${mode}`);
+      const response = await this.axiosInstance.post('/set-cpu-mode',
+        { mode },
+        { timeout: 5000 }
+      );
+      console.log(`[HashClient] ✓ CPU mode set to ${response.data.mode} (${response.data.thread_count} threads)`);
+      return response.data;
+    } catch (err: any) {
+      throw new Error(`Failed to set CPU mode: ${err.message}`);
     }
   }
 

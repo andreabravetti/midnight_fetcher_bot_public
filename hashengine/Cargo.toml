@@ -15,6 +15,7 @@ path = "src/bin/server.rs"
 [dependencies]
 # Core HashEngine dependencies (copy from original)
 cryptoxide = "0.5"  # Updated: Latest version with SIMD optimizations
+blake2b_simd = "1.0"  # SIMD-optimized Blake2b using AVX2/SSE instructions
 hex = "0.4"
 getrandom = "0.3"
 

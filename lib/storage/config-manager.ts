@@ -11,6 +11,8 @@ export interface MiningConfig {
   batchSize: number | null;
   workerGroupingMode: 'auto' | 'all-on-one' | 'grouped';
   workersPerAddress: number;
+  autonomousMining?: boolean; // NEW: Feature flag for autonomous mining (hash service validates difficulty)
+  cpuMode?: 'normal' | 'max'; // CPU usage mode (normal = 50% cores, max = 90% cores)
 }
 
 class ConfigManager {
@@ -20,6 +22,8 @@ class ConfigManager {
     batchSize: null, // null means use default
     workerGroupingMode: 'auto',
     workersPerAddress: 5,
+    autonomousMining: true, // Default to false for backward compatibility
+    cpuMode: 'normal', // Default (not used - hash engine reads hash-config.json)
   };
 
   constructor() {

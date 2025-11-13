@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as os from 'os';
-import { miningOrchestrator } from '@/lib/mining/orchestrator';
+import { miningOrchestrator } from '@/lib/mining/orchestrator-simple';
 
 /**
  * System Specs API - Returns hardware specifications for scaling recommendations
