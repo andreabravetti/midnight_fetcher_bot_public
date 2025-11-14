@@ -169,23 +169,25 @@ export class SimplifiedOrchestrator extends EventEmitter {
           this.currentChallenge.challenge_id !== newChallenge.challenge_id;
 
         if (challengeChanged) {
-          // If we have a current challenge, check if at least 50% of addresses are processed
+          // If we have a current challenge, wait for all workers to finish
           if (this.currentChallenge) {
+            // Check if any workers are still running for the current challenge
+            const activeWorkers = Array.from(this.workerRunning.entries())
+              .filter(([id, running]) => running && id <= this.NUM_MINING_WORKERS)
+              .length;
+
+            if (activeWorkers > 0) {
+              Logger.log('mining',`[SimplifiedOrchestrator] New challenge detected but ${activeWorkers} workers still mining current challenge ${this.currentChallenge.challenge_id}`);
+              Logger.log('mining',`[SimplifiedOrchestrator] Waiting for workers to finish before switching...`);
+              return; // Don't switch yet - wait for workers to complete
+            }
+
+            // All workers finished - mark current challenge as completed and switch
             const completedCount = this.solvedAddresses.size;
             const totalCount = this.addresses.length;
             const completionPercentage = (completedCount / totalCount) * 100;
-            const halfwayThreshold = 50; // 50% threshold
-
-            if (completionPercentage < halfwayThreshold) {
-              Logger.log('mining',`[SimplifiedOrchestrator] New challenge detected but only ${completionPercentage.toFixed(1)}% completed for current challenge`);
-              Logger.log('mining',`[SimplifiedOrchestrator] Completed: ${completedCount}/${totalCount} addresses (need ${halfwayThreshold}%)`);
-              Logger.log('mining',`[SimplifiedOrchestrator] Continuing with current challenge: ${this.currentChallenge.challenge_id}`);
-              return; // Don't switch challenges yet - need at least 50%
-            }
-
-            // At least 50% processed - mark current challenge as completed and switch
-            Logger.log('mining',`[SimplifiedOrchestrator] ${completionPercentage.toFixed(1)}% addresses processed for challenge: ${this.currentChallenge.challenge_id}`);
-            Logger.log('mining',`[SimplifiedOrchestrator] Switching to new challenge (workers will finish current operations)`);
+            Logger.log('mining',`[SimplifiedOrchestrator] All workers finished. ${completionPercentage.toFixed(1)}% addresses processed for challenge: ${this.currentChallenge.challenge_id}`);
+            Logger.log('mining',`[SimplifiedOrchestrator] Switching to new challenge: ${newChallenge.challenge_id}`);
             challengeLogger.logChallenge({
               ts: new Date().toISOString(),
               challenge_id: this.currentChallenge.challenge_id,
