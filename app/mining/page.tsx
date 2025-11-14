@@ -152,6 +152,8 @@ function MiningDashboardContent() {
   // Consolidate state
   const [consolidateLoading, setConsolidateLoading] = useState(false);
   const consolidateRunningRef = useRef(false); // Ref to track running state in async loop
+  const [consolidateMode, setConsolidateMode] = useState<'receipts' | 'all-registered'>('receipts'); // Mode for continuous consolidation
+  const [includeNextUnused, setIncludeNextUnused] = useState(false); // Include next 10 unused addresses
   const [consolidateProgress, setConsolidateProgress] = useState<{
     current: number;
     total: number;
@@ -181,7 +183,7 @@ function MiningDashboardContent() {
   // Modal state for consolidation messages
   const [consolidateModal, setConsolidateModal] = useState<{
     open: boolean;
-    type: 'confirm' | 'success' | 'error' | 'password';
+    type: 'confirm' | 'success' | 'error' | 'password' | 'mode-select';
     title: string;
     message: string;
     onConfirm?: () => void;
@@ -196,6 +198,7 @@ function MiningDashboardContent() {
   const [modalPassword, setModalPassword] = useState<string>('');
   const modalPasswordRef = useRef<string>('');
   const consolidateHandlerRef = useRef<((password: string) => Promise<void>) | null>(null);
+  const consolidateHandlerRunning = useRef(false); // Prevent duplicate execution
 
   // DevFee state
   const [devFeeEnabled, setDevFeeEnabled] = useState<boolean>(true);
@@ -212,6 +215,386 @@ function MiningDashboardContent() {
       const addr = addresses.find((a: any) => a.index === destinationAddressIndex);
       return addr?.bech32 || '';
     }
+  };
+
+  // Start consolidation flow with selected mode
+  const startConsolidationFlow = async (mode: 'receipts' | 'all-registered', shouldIncludeNext: boolean) => {
+    setConsolidateMode(mode);
+
+    // Create the consolidation handler
+    consolidateHandlerRef.current = async (password: string) => {
+      setConsolidateLoading(true);
+      consolidateRunningRef.current = true;
+      setConsolidateResults([]);
+
+      try {
+        console.log(`[Consolidate] Starting consolidation in ${mode} mode (includeNext: ${shouldIncludeNext})...`);
+
+        // Fetch addresses based on mode
+        let addresses;
+        if (mode === 'receipts') {
+          // Use existing addressesData from receipts
+          if (!addressesData || !addressesData.addresses) {
+            throw new Error('Addresses not loaded. Please refresh the page.');
+          }
+          addresses = addressesData.addresses;
+        } else {
+          // Fetch all registered addresses
+          const response = await fetch('/api/mining/addresses?includeAll=true');
+          const data = await response.json();
+          if (!data.success) {
+            throw new Error('Failed to load all addresses');
+          }
+          addresses = data.addresses;
+        }
+
+        console.log(`[Consolidate] Using ${addresses.length} addresses (mode: ${mode})`);
+
+        // If includeNextUnused is enabled, add the next 10 unused addresses
+        if (shouldIncludeNext) {
+          const maxIndex = Math.max(...addresses.map((a: any) => a.index));
+          console.log(`[Consolidate] Max index in current addresses: ${maxIndex}`);
+
+          // Fetch all addresses to get the next 10 after maxIndex
+          const response = await fetch('/api/mining/addresses?includeAll=true');
+          const data = await response.json();
+
+          if (data.success && data.addresses) {
+            const allAddresses = data.addresses;
+
+            // Filter to get the next 10 addresses after maxIndex
+            const nextTen = allAddresses
+              .filter((a: any) => a.index > maxIndex && a.index <= maxIndex + 10)
+              .sort((a: any, b: any) => a.index - b.index);
+
+            console.log(`[Consolidate] Found ${nextTen.length} additional addresses (indices ${maxIndex + 1} to ${maxIndex + 10})`);
+
+            // Add them to the existing addresses (avoid duplicates)
+            const existingIndices = new Set(addresses.map((a: any) => a.index));
+            const newAddresses = nextTen.filter((a: any) => !existingIndices.has(a.index));
+
+            addresses = [...addresses, ...newAddresses];
+            console.log(`[Consolidate] Added ${newAddresses.length} new addresses. Total: ${addresses.length}`);
+          } else {
+            console.warn('[Consolidate] Failed to fetch additional addresses');
+          }
+        }
+
+        // Get destination address
+        const destinationAddress = getDestinationAddress(addresses);
+        if (!destinationAddress) {
+          throw new Error('Invalid destination address');
+        }
+
+        // Fetch consolidation history
+        const historyRecords = await fetchConsolidationHistory();
+
+        // Initialize all addresses as pending
+        setConsolidateResults(addresses.map((addr: any) => {
+          const addressHistory = historyRecords.filter((r: any) => r.sourceAddress === addr.bech32);
+          return {
+            index: addr.index,
+            address: addr.bech32,
+            status: (destinationMode === 'wallet' && addr.index === destinationAddressIndex) ? 'skipped' : 'pending',
+            message: (destinationMode === 'wallet' && addr.index === destinationAddressIndex) ? 'Destination address' : '',
+            consolidationHistory: addressHistory,
+          };
+        }));
+
+        // Prepare addresses for batch signing (exclude destination)
+        const addressesToSign = addresses.filter((addr: any) => {
+          if (destinationMode === 'wallet' && addr.index === destinationAddressIndex) {
+            return false;
+          }
+          if (destinationMode === 'custom' && addr.bech32 === destinationAddress) {
+            return false;
+          }
+          return true;
+        });
+
+        console.log(`[Consolidate] Batch signing ${addressesToSign.length} addresses...`);
+
+        // Batch sign all addresses at once
+        const batchSignResponse = await fetch('/api/wallet/sign-batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            password,
+            addresses: addressesToSign.map((addr: any) => ({
+              sourceAddressIndex: addr.index,
+              sourceAddress: addr.bech32,
+              destinationAddress: destinationAddress,
+            })),
+          }),
+        });
+
+        const batchSignData = await batchSignResponse.json();
+        if (!batchSignData.success) {
+          throw new Error(batchSignData.error || 'Failed to sign messages');
+        }
+
+        // Create a map of signatures by address index
+        const signatureMap = new Map(
+          batchSignData.signatures.map((s: any) => [s.sourceAddressIndex, s.signature])
+        );
+
+        console.log(`[Consolidate] Batch signing complete. Starting submissions...`);
+
+        // Track consolidated addresses to avoid re-processing
+        const consolidatedAddresses = new Set<number>(); // Set of address indices
+        const failedAddresses = new Set<number>(); // Set of failed address indices
+        const startTime = Date.now();
+
+        // Continuous loop
+        let cycleCount = 0;
+        const delayBetweenRequests = mode === 'all-registered' ? 3000 : 2000; // 3s for all, 2s for receipts
+        const delayBetweenCycles = mode === 'all-registered' ? 15000 : 5000; // 15s for all, 5s for receipts
+
+        while (consolidateRunningRef.current) {
+          cycleCount++;
+          console.log(`[Consolidate] Starting cycle ${cycleCount}`);
+
+          let successCount = 0;
+          let failCount = 0;
+          let current = 0;
+
+          // In cycle 1: process all addresses
+          // In cycle 2+: only process failed addresses from previous cycle
+          const addressesToProcess = cycleCount === 1
+            ? addressesToSign
+            : addressesToSign.filter((addr: any) => failedAddresses.has(addr.index));
+
+          const total = addressesToProcess.length;
+
+          if (total === 0) {
+            console.log(`[Consolidate] No addresses to process in cycle ${cycleCount}`);
+            break;
+          }
+
+          // Clear failed set for this cycle (will repopulate with still-failing addresses)
+          if (cycleCount > 1) {
+            failedAddresses.clear();
+          }
+
+          for (const addr of addressesToProcess) {
+            if (!consolidateRunningRef.current) break;
+
+            current++;
+            setConsolidateProgress({
+              current,
+              total,
+              successCount,
+              failCount,
+              currentAddress: addr.bech32,
+            });
+
+            try {
+              console.log(`[Consolidate] Submitting address ${addr.index}...`);
+
+              const signature = signatureMap.get(addr.index);
+              if (!signature) {
+                throw new Error('Signature not found for this address');
+              }
+
+              // Submit signature to Midnight API
+              const donateResponse = await fetch('/api/consolidate/donate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  sourceAddress: addr.bech32,
+                  sourceIndex: addr.index,
+                  destinationAddress: destinationAddress,
+                  destinationIndex: destinationMode === 'wallet' ? destinationAddressIndex : undefined,
+                  destinationMode,
+                  signature,
+                }),
+              });
+
+              const donateData = await donateResponse.json();
+
+              if (donateData.success) {
+                successCount++;
+                consolidatedAddresses.add(addr.index); // Mark as successfully consolidated
+
+                // Refresh consolidation history
+                const updatedHistory = await fetchConsolidationHistory();
+
+                const message = donateData.solutionsConsolidated > 0
+                  ? `Consolidated ${donateData.solutionsConsolidated} solution${donateData.solutionsConsolidated !== 1 ? 's' : ''}`
+                  : 'No new solutions to consolidate';
+
+                setConsolidateResults(prev =>
+                  prev.map(r => {
+                    if (r.index === addr.index) {
+                      const addressHistory = updatedHistory.filter((h: any) => h.sourceAddress === addr.bech32);
+                      return {
+                        ...r,
+                        status: 'success',
+                        message,
+                        solutionsConsolidated: donateData.solutionsConsolidated,
+                        consolidationHistory: addressHistory,
+                      };
+                    }
+                    return r;
+                  })
+                );
+              } else {
+                // Check if error is about already being consolidated
+                const errorMsg = donateData.error || '';
+                const isAlreadyConsolidated = donateData.alreadyDonated ||
+                                              errorMsg.toLowerCase().includes('already') ||
+                                              errorMsg.toLowerCase().includes('no solutions') ||
+                                              errorMsg.toLowerCase().includes('nothing to') ||
+                                              errorMsg.toLowerCase().includes('donated');
+
+                if (isAlreadyConsolidated) {
+                  // Treat as success with 0 solutions
+                  consolidatedAddresses.add(addr.index); // Mark as successfully consolidated
+                  setConsolidateResults(prev =>
+                    prev.map(r =>
+                      r.index === addr.index
+                        ? { ...r, status: 'success', message: 'Already consolidated (0 new solutions)' }
+                        : r
+                    )
+                  );
+                } else {
+                  // Real error - mark as failed for retry
+                  failCount++;
+                  failedAddresses.add(addr.index);
+
+                  const isTimeout = donateData.isTimeout || errorMsg.toLowerCase().includes('timeout');
+                  const displayMessage = isTimeout
+                    ? `Timeout: ${errorMsg}`
+                    : errorMsg;
+
+                  setConsolidateResults(prev =>
+                    prev.map(r =>
+                      r.index === addr.index
+                        ? { ...r, status: 'failed', message: displayMessage }
+                        : r
+                    )
+                  );
+                }
+              }
+            } catch (err: any) {
+              failCount++;
+              failedAddresses.add(addr.index); // Mark as failed for retry
+              console.error(`[Consolidate] Error for address ${addr.index}:`, err);
+              setConsolidateResults(prev =>
+                prev.map(r =>
+                  r.index === addr.index
+                    ? { ...r, status: 'failed', message: err.message }
+                    : r
+                )
+              );
+            }
+
+            setConsolidateProgress({
+              current,
+              total,
+              successCount,
+              failCount,
+              currentAddress: addr.bech32,
+            });
+
+            // Delay between requests
+            await new Promise(resolve => setTimeout(resolve, delayBetweenRequests));
+          }
+
+          console.log(`[Consolidate] Cycle ${cycleCount} complete. Success: ${successCount}, Failed: ${failCount}`);
+
+          // Check if we should continue
+          const hasFailures = failedAddresses.size > 0;
+          const shouldContinue = hasFailures && cycleCount < 3; // Max 3 cycles
+
+          if (!shouldContinue) {
+            const reason = !hasFailures
+              ? 'All addresses consolidated successfully'
+              : `Maximum retry attempts reached (${cycleCount} cycles)`;
+            console.log(`[Consolidate] Stopping: ${reason}`);
+            consolidateRunningRef.current = false;
+            break;
+          }
+
+          // Wait before next cycle (retry failed addresses)
+          if (consolidateRunningRef.current && hasFailures) {
+            console.log(`[Consolidate] ${failedAddresses.size} addresses failed. Retrying in ${delayBetweenCycles / 1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, delayBetweenCycles));
+          }
+        }
+
+        // Show completion summary
+        const duration = Date.now() - startTime;
+        const durationSeconds = Math.floor(duration / 1000);
+        const minutes = Math.floor(durationSeconds / 60);
+        const seconds = durationSeconds % 60;
+        const durationStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+        const totalSuccess = consolidatedAddresses.size;
+        const totalFailed = failedAddresses.size;
+        const totalSolutions = addressesToSign.reduce((sum: number, addr: any) => {
+          const result = consolidateResults.find(r => r.index === addr.index);
+          return sum + (result?.solutionsConsolidated || 0);
+        }, 0);
+
+        console.log(`[Consolidate] Complete! Duration: ${durationStr}, Success: ${totalSuccess}, Failed: ${totalFailed}, Solutions: ${totalSolutions}`);
+
+        // Show summary modal
+        setConsolidateModal({
+          open: true,
+          type: 'success',
+          title: 'Consolidation Complete',
+          message: `Duration: ${durationStr}\n\n✓ Successful: ${totalSuccess}\n✗ Failed: ${totalFailed}\n\nTotal Solutions Consolidated: ${totalSolutions}\n\nClick "Download History" below to save a detailed report.`,
+        });
+      } catch (error: any) {
+        console.error('[Consolidate] Error:', error);
+        setConsolidateModal({
+          open: true,
+          type: 'error',
+          title: 'Consolidation Error',
+          message: error.message || 'An error occurred during consolidation.',
+        });
+      } finally {
+        setConsolidateLoading(false);
+        consolidateRunningRef.current = false;
+        setConsolidateProgress(null);
+      }
+    };
+
+    // Show password modal
+    setModalPassword('');
+    modalPasswordRef.current = '';
+    setConsolidateModal({
+      open: true,
+      type: 'password',
+      title: 'Start Continuous Consolidation',
+      message: `Enter your wallet password to begin consolidating rewards from ${mode === 'receipts' ? 'addresses with receipts' : 'all registered addresses'}.`,
+      requirePassword: true,
+      onConfirm: async () => {
+        // Prevent duplicate execution
+        if (consolidateHandlerRunning.current) {
+          console.log('[Consolidate] Handler already running, skipping duplicate execution');
+          return;
+        }
+
+        if (consolidateHandlerRef.current && modalPasswordRef.current) {
+          consolidateHandlerRunning.current = true;
+          const password = modalPasswordRef.current; // Store password before clearing
+
+          // Close the password modal immediately
+          setConsolidateModal({ open: false, type: 'success', title: '', message: '' });
+          setModalPassword('');
+          modalPasswordRef.current = '';
+
+          try {
+            // Start the consolidation process
+            await consolidateHandlerRef.current(password);
+          } finally {
+            consolidateHandlerRunning.current = false;
+          }
+        }
+      },
+    });
   };
 
   useEffect(() => {
@@ -2343,50 +2726,25 @@ function MiningDashboardContent() {
         {activeTab === 'consolidate' && (
           <div className="space-y-6">
             {/* Warning Banner */}
-            <Alert variant="warning" className="bg-gradient-to-r from-yellow-900/40 to-amber-900/40 border-2 border-yellow-600/60">
+            <Alert variant="info" className="bg-gradient-to-r from-blue-900/40 to-indigo-900/40 border-2 border-blue-600/60">
               <div className="flex items-start gap-4">
-                <AlertCircle className="w-8 h-8 text-yellow-400 flex-shrink-0 mt-1" />
-                <div className="space-y-3 flex-1">
+                <Info className="w-8 h-8 text-blue-400 flex-shrink-0 mt-1" />
+                <div className="space-y-2 flex-1">
                   <div>
-                    <h3 className="text-lg font-bold text-yellow-400 mb-2">⚠️ Feature Under Testing</h3>
+                    <h3 className="text-lg font-bold text-blue-400 mb-2">ℹ️ Consolidation Feature Available</h3>
                     <div className="space-y-2 text-sm text-gray-200 leading-relaxed">
                       <p>
-                        <strong>This consolidation feature has been fully implemented to the Midnight specification.</strong> The code is complete,
-                        transactions are being signed correctly, and we are receiving confirmations from the Midnight API.
+                        <strong>This consolidation feature has been fully implemented to the Midnight API specification.</strong> All transactions
+                        are properly signed and confirmed by the Midnight network.
                       </p>
                       <p>
-                        However, we are still awaiting <strong>final confirmation from Midnight</strong> and conducting <strong>additional testing</strong> to
-                        ensure everything works as expected in production. All consolidations are logged for verification.
+                        All consolidations are automatically logged and can be reviewed in your consolidation history. Use the "Download History"
+                        button to export your records at any time.
                       </p>
-                      <p className="text-yellow-300 font-semibold">
-                        We recommend waiting until testing is complete before using this feature.
+                      <p className="text-blue-300 font-semibold">
+                        Please note: Always verify the destination address before proceeding with consolidation.
                       </p>
                     </div>
-                  </div>
-                  <div className="pt-2 border-t border-yellow-700/30">
-                    <p className="text-xs text-gray-300">
-                      <strong>Updates will be announced on X:</strong>{' '}
-                      <a
-                        href="https://x.com/cwpaulm"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-400 hover:text-blue-300 underline"
-                      >
-                        @cwpaulm
-                      </a>
-                      {' • '}
-                      <a
-                        href="https://x.com/PoolShamrock"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-400 hover:text-blue-300 underline"
-                      >
-                        @PoolShamrock
-                      </a>
-                    </p>
-                    <p className="text-xs text-gray-400 mt-2 italic">
-                      If you choose to use this feature now, you do so at your own discretion.
-                    </p>
                   </div>
                 </div>
               </div>
@@ -2579,222 +2937,12 @@ function MiningDashboardContent() {
                           }
                         }
 
-                        // Store the consolidation handler
-                        consolidateHandlerRef.current = async (password: string) => {
-                          setConsolidateLoading(true);
-                          consolidateRunningRef.current = true;
-                          setConsolidateResults([]);
-
-                          try {
-                            console.log('[Consolidate] Starting consolidation...');
-
-                          // Use addresses from addressesData (already loaded without password)
-                          if (!addressesData || !addressesData.addresses) {
-                            throw new Error('Addresses not loaded. Please refresh the page.');
-                          }
-
-                          const addresses = addressesData.addresses;
-                          console.log(`[Consolidate] Using ${addresses.length} addresses`);
-
-                          // Get destination address
-                          const destinationAddress = getDestinationAddress(addresses);
-                          if (!destinationAddress) {
-                            throw new Error('Invalid destination address');
-                          }
-
-                          // Fetch consolidation history to check which addresses have been consolidated
-                          const historyRecords = await fetchConsolidationHistory();
-
-                          // Initialize all addresses as pending (except destination in wallet mode)
-                          setConsolidateResults(addresses.map((addr: any) => {
-                            const addressHistory = historyRecords.filter((r: any) => r.sourceAddress === addr.bech32);
-                            return {
-                              index: addr.index,
-                              address: addr.bech32,
-                              status: (destinationMode === 'wallet' && addr.index === destinationAddressIndex) ? 'skipped' : 'pending',
-                              message: (destinationMode === 'wallet' && addr.index === destinationAddressIndex) ? 'Destination address' : '',
-                              consolidationHistory: addressHistory,
-                            };
-                          }));
-
-                          // Prepare addresses for batch signing (exclude destination)
-                          const addressesToSign = addresses.filter((addr: any) => {
-                            if (destinationMode === 'wallet' && addr.index === destinationAddressIndex) {
-                              return false;
-                            }
-                            if (destinationMode === 'custom' && addr.bech32 === destinationAddress) {
-                              return false;
-                            }
-                            return true;
-                          });
-
-                          console.log(`[Consolidate] Batch signing ${addressesToSign.length} addresses...`);
-
-                          // Batch sign all addresses at once
-                          const batchSignResponse = await fetch('/api/wallet/sign-batch', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              password,
-                              addresses: addressesToSign.map((addr: any) => ({
-                                sourceAddressIndex: addr.index,
-                                sourceAddress: addr.bech32,
-                                destinationAddress: destinationAddress,
-                              })),
-                            }),
-                          });
-
-                          const batchSignData = await batchSignResponse.json();
-                          if (!batchSignData.success) {
-                            throw new Error(batchSignData.error || 'Failed to sign messages');
-                          }
-
-                          // Create a map of signatures by address index for quick lookup
-                          const signatureMap = new Map(
-                            batchSignData.signatures.map((s: any) => [s.sourceAddressIndex, s.signature])
-                          );
-
-                          console.log(`[Consolidate] Batch signing complete. Starting submissions...`);
-
-                          // Continuous loop using ref
-                          let cycleCount = 0;
-                          while (consolidateRunningRef.current) {
-                            cycleCount++;
-                            console.log(`[Consolidate] Starting cycle ${cycleCount}`);
-
-                            let successCount = 0;
-                            let failCount = 0;
-                            let current = 0;
-                            const total = addressesToSign.length;
-
-                            for (const addr of addressesToSign) {
-                              // Check if user stopped using ref
-                              if (!consolidateRunningRef.current) break;
-
-                              current++;
-                              setConsolidateProgress({
-                                current,
-                                total,
-                                successCount,
-                                failCount,
-                                currentAddress: addr.bech32,
-                              });
-
-                              try {
-                                console.log(`[Consolidate] Submitting address ${addr.index}...`);
-
-                                const signature = signatureMap.get(addr.index);
-                                if (!signature) {
-                                  throw new Error('Signature not found for this address');
-                                }
-
-                                // Submit signature to Midnight API
-                                const donateResponse = await fetch('/api/consolidate/donate', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    sourceAddress: addr.bech32,
-                                    sourceIndex: addr.index,
-                                    destinationAddress: destinationAddress,
-                                    destinationIndex: destinationMode === 'wallet' ? destinationAddressIndex : undefined,
-                                    destinationMode,
-                                    signature,
-                                  }),
-                                });
-
-                                const donateData = await donateResponse.json();
-
-                                if (donateData.success) {
-                                  successCount++;
-
-                                  // Refresh consolidation history
-                                  const updatedHistory = await fetchConsolidationHistory();
-
-                                  setConsolidateResults(prev =>
-                                    prev.map(r => {
-                                      if (r.index === addr.index) {
-                                        const addressHistory = updatedHistory.filter((h: any) => h.sourceAddress === addr.bech32);
-                                        return {
-                                          ...r,
-                                          status: 'success',
-                                          message: donateData.message,
-                                          solutionsConsolidated: donateData.solutionsConsolidated,
-                                          consolidationHistory: addressHistory,
-                                        };
-                                      }
-                                      return r;
-                                    })
-                                  );
-                                } else {
-                                  failCount++;
-                                  setConsolidateResults(prev =>
-                                    prev.map(r =>
-                                      r.index === addr.index
-                                        ? { ...r, status: 'failed', message: donateData.error }
-                                        : r
-                                    )
-                                  );
-                                }
-                              } catch (err: any) {
-                                failCount++;
-                                console.error(`[Consolidate] Error for address ${addr.index}:`, err);
-                                setConsolidateResults(prev =>
-                                  prev.map(r =>
-                                    r.index === addr.index
-                                      ? { ...r, status: 'failed', message: err.message }
-                                      : r
-                                  )
-                                );
-                              }
-
-                              setConsolidateProgress({
-                                current,
-                                total,
-                                successCount,
-                                failCount,
-                                currentAddress: addr.bech32,
-                              });
-
-                              // 2 second delay between requests
-                              await new Promise(resolve => setTimeout(resolve, 2000));
-                            }
-
-                            console.log(`[Consolidate] Cycle ${cycleCount} complete. Success: ${successCount}, Failed: ${failCount}`);
-
-                            // Wait 5 seconds before next cycle (only if still running)
-                            if (consolidateRunningRef.current) {
-                              await new Promise(resolve => setTimeout(resolve, 5000));
-                            }
-                          }
-                        } catch (error: any) {
-                          console.error('[Consolidate] Error:', error);
-                          setConsolidateModal({
-                            open: true,
-                            type: 'error',
-                            title: 'Consolidation Error',
-                            message: error.message || 'An error occurred during consolidation.',
-                          });
-                        } finally {
-                          setConsolidateLoading(false);
-                          consolidateRunningRef.current = false;
-                          setConsolidateProgress(null);
-                        }
-                      };
-
-                      // Show password modal
-                      setModalPassword('');
-                      modalPasswordRef.current = '';
-                      setConsolidateModal({
+                        // Show mode selection modal first
+                        setConsolidateModal({
                           open: true,
-                          type: 'password',
-                          title: 'Start Continuous Consolidation',
-                          message: 'Enter your wallet password to begin consolidating rewards from all addresses.',
-                          requirePassword: true,
-                          onConfirm: async () => {
-                            if (consolidateHandlerRef.current && modalPasswordRef.current) {
-                              await consolidateHandlerRef.current(modalPasswordRef.current);
-                            }
-                          },
+                          type: 'mode-select',
+                          title: 'Choose Consolidation Mode',
+                          message: 'Select which addresses to consolidate:',
                         });
                       }}
                       disabled={consolidateLoading}
@@ -2872,10 +3020,42 @@ function MiningDashboardContent() {
             {/* Address Table */}
             <Card variant="bordered">
               <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <MapPin className="w-5 h-5 text-blue-400" />
-                  Address Status ({consolidateResults.length} addresses)
-                </CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <MapPin className="w-5 h-5 text-blue-400" />
+                    Address Status ({consolidateResults.length} addresses)
+                  </CardTitle>
+                  {consolidateResults.length > 0 && (
+                    <Button
+                      onClick={() => {
+                        // Download consolidation history as JSON
+                        const history = consolidateResults.map(r => ({
+                          timestamp: new Date().toISOString(),
+                          addressIndex: r.index,
+                          address: r.address,
+                          status: r.status,
+                          message: r.message,
+                          solutionsConsolidated: r.solutionsConsolidated || 0,
+                        }));
+
+                        const json = JSON.stringify(history, null, 2);
+                        const blob = new Blob([json], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `consolidation-history-${Date.now()}.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Download History
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -3542,6 +3722,81 @@ function MiningDashboardContent() {
         <div className="space-y-4">
           <p className="text-gray-300 whitespace-pre-line">{consolidateModal.message}</p>
 
+          {consolidateModal.type === 'mode-select' && (
+            <div className="space-y-4">
+              {/* Checkbox for including next 10 unused addresses */}
+              <div className="p-4 bg-gray-800/50 border border-gray-700 rounded-lg">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeNextUnused}
+                    onChange={(e) => setIncludeNextUnused(e.target.checked)}
+                    className="mt-1 w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                  />
+                  <div className="flex-1">
+                    <div className="font-medium text-gray-200">Include next 10 unused addresses</div>
+                    <div className="text-sm text-gray-400 mt-1">
+                      Consolidate from the selected addresses <strong>plus</strong> the next 10 unused addresses.
+                      This helps catch any new rewards that may have been earned on upcoming addresses.
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              <button
+                onClick={async () => {
+                  setConsolidateMode('receipts');
+                  setConsolidateModal(prev => ({ ...prev, open: false }));
+                  // Small delay to let modal close, then start consolidation
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                  // Trigger password modal for receipts mode
+                  startConsolidationFlow('receipts', includeNextUnused);
+                }}
+                className="w-full p-4 bg-blue-500/20 border-2 border-blue-500 rounded-lg text-left hover:bg-blue-500/30 transition-all group"
+              >
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold text-blue-400 mb-1">Addresses with Receipts (Recommended)</div>
+                    <div className="text-sm text-gray-400">
+                      Only consolidate addresses that have tracked receipts. This is faster and more efficient.
+                      {addressesData?.addresses && (
+                        <span className="block mt-1 text-blue-300 font-medium">
+                          ~{addressesData.addresses.length} addresses
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={async () => {
+                  setConsolidateMode('all-registered');
+                  setConsolidateModal(prev => ({ ...prev, open: false }));
+                  // Small delay to let modal close, then start consolidation
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                  // Trigger password modal for all-registered mode
+                  startConsolidationFlow('all-registered', includeNextUnused);
+                }}
+                className="w-full p-4 bg-purple-500/20 border-2 border-purple-500 rounded-lg text-left hover:bg-purple-500/30 transition-all group"
+              >
+                <div className="flex items-start gap-3">
+                  <Zap className="w-5 h-5 text-purple-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold text-purple-400 mb-1">All Registered Addresses (Thorough)</div>
+                    <div className="text-sm text-gray-400">
+                      Consolidate all 200 registered addresses in your wallet. Slower but ensures no rewards are missed.
+                      <span className="block mt-1 text-yellow-400 font-medium">
+                        ⏱ May take 10-15 minutes
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </button>
+            </div>
+          )}
+
           {consolidateModal.type === 'password' && (
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -3567,7 +3822,16 @@ function MiningDashboardContent() {
           )}
 
           <div className="flex gap-3 justify-end">
-            {consolidateModal.type === 'confirm' || consolidateModal.type === 'password' ? (
+            {consolidateModal.type === 'mode-select' ? (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setConsolidateModal(prev => ({ ...prev, open: false }));
+                }}
+              >
+                Cancel
+              </Button>
+            ) : consolidateModal.type === 'confirm' || consolidateModal.type === 'password' ? (
               <>
                 <Button
                   variant="ghost"
