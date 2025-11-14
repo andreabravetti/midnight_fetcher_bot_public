@@ -1581,7 +1581,7 @@ class MiningOrchestrator extends EventEmitter {
    * Submit solution to API
    * API format: POST /solution/{address}/{challenge_id}/{nonce}
    */
-  private async submitSolution(addr: DerivedAddress, challengeId: string, nonce: string, hash: string, preimage: string, isDevFee: boolean = false, workerId: number = 0): Promise<void> {
+  private async submitSolution(addr: DerivedAddress, challengeId: string, nonce: string, hash: string, preimage: string, isDevFee: boolean = false, workerId: number = 0, isRetryAfterRegistration: boolean = false): Promise<void> {
     if (!this.walletManager) return;
 
     try {
@@ -1689,7 +1689,56 @@ class MiningOrchestrator extends EventEmitter {
         isTimeout: error.code === 'ECONNABORTED',
       });
 
-      // Log error to file
+      // Check if error is due to address not being registered
+      const errorMessage = error.response?.data?.message || error.response?.data?.error || error.message || '';
+      const isNotRegisteredError =
+        errorMessage.toLowerCase().includes('not registered') ||
+        errorMessage.toLowerCase().includes('unregistered') ||
+        error.response?.status === 403; // Some APIs return 403 for unregistered addresses
+
+      // Auto-retry registration ONCE if this is a registration error and we haven't already retried
+      if (isNotRegisteredError && !isRetryAfterRegistration) {
+        console.log('[Orchestrator] ⚠️  Solution failed due to address not registered');
+        console.log('[Orchestrator] 🔄 Attempting to register address and resubmit solution...');
+
+        try {
+          // Register the address
+          await this.registerAddress(addr);
+          console.log('[Orchestrator] ✓ Address registered successfully');
+
+          // Retry solution submission once
+          console.log('[Orchestrator] 🔄 Retrying solution submission...');
+          return await this.submitSolution(addr, challengeId, nonce, hash, preimage, isDevFee, workerId, true);
+        } catch (registrationError: any) {
+          console.error('[Orchestrator] ✗ Auto-registration failed:', registrationError.message);
+          console.log('[Orchestrator] ✗ Solution lost - address could not be registered');
+
+          // Log the registration failure
+          receiptsLogger.logError({
+            ts: new Date().toISOString(),
+            address: addr.bech32,
+            addressIndex: addr.index,
+            challenge_id: challengeId,
+            nonce: nonce,
+            hash: hash,
+            error: `Auto-registration failed: ${registrationError.message}. Original error: ${errorMessage}`,
+            response: error.response?.data,
+          });
+
+          // Emit failure event
+          this.emit('solution_result', {
+            type: 'solution_result',
+            address: addr.bech32,
+            addressIndex: addr.index,
+            success: false,
+            message: `Auto-registration failed: ${registrationError.message}`,
+          } as MiningEvent);
+
+          throw registrationError;
+        }
+      }
+
+      // Log error to file (for non-registration errors or failed retry)
       receiptsLogger.logError({
         ts: new Date().toISOString(),
         address: addr.bech32,

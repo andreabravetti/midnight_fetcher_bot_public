@@ -118,7 +118,7 @@ function MiningDashboardContent() {
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'rewards' | 'workers' | 'addresses' | 'logs' | 'scale' | 'devfee' | 'consolidate'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'rewards' | 'workers' | 'addresses' | 'scale' | 'devfee' | 'consolidate' | 'diagnostics'>('dashboard');
   const [history, setHistory] = useState<HistoryData | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFilter, setHistoryFilter] = useState<'all' | 'success' | 'error'>('all');
@@ -208,6 +208,11 @@ function MiningDashboardContent() {
   const [devFeeData, setDevFeeData] = useState<any | null>(null);
   const [historyLastRefresh, setHistoryLastRefresh] = useState<number | null>(null);
   const [currentTime, setCurrentTime] = useState(Date.now());
+
+  // Diagnostics state
+  const [diagnosticsRunning, setDiagnosticsRunning] = useState(false);
+  const [diagnosticsResults, setDiagnosticsResults] = useState<any | null>(null);
+  const [diagnosticsPassword, setDiagnosticsPassword] = useState<string>('');
 
   // Helper function to get destination address based on mode
   const getDestinationAddress = (addresses: any[]) => {
@@ -928,17 +933,17 @@ function MiningDashboardContent() {
             )}
           </button>
           <button
-            onClick={() => setActiveTab('logs')}
+            onClick={() => setActiveTab('diagnostics')}
             className={cn(
               'px-6 py-3 font-medium transition-colors relative',
-              activeTab === 'logs'
+              activeTab === 'diagnostics'
                 ? 'text-blue-400'
                 : 'text-gray-400 hover:text-gray-300'
             )}
           >
-            <Terminal className="w-4 h-4 inline mr-2" />
-            Logs
-            {activeTab === 'logs' && (
+            <Activity className="w-4 h-4 inline mr-2" />
+            Diagnostics
+            {activeTab === 'diagnostics' && (
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400" />
             )}
           </button>
@@ -3682,19 +3687,269 @@ function MiningDashboardContent() {
           </div>
         )}
 
-        {/* Logs Tab */}
-        {activeTab === 'logs' && (
+        {/* Diagnostics Tab */}
+        {activeTab === 'diagnostics' && (
           <div className="space-y-6">
+            <Card variant="bordered">
+              <CardHeader>
+                <CardTitle className="text-2xl flex items-center gap-2">
+                  <Activity className="w-6 h-6 text-blue-400" />
+                  System Diagnostics & Logs
+                </CardTitle>
+                <CardDescription>
+                  Test API connectivity, diagnose issues, and view mining logs
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Test Controls */}
+                <div className="space-y-4">
+                  <div className="p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                    <h3 className="text-sm font-semibold text-blue-400 mb-2">Test Configuration</h3>
+                    <p className="text-sm text-gray-400 mb-4">
+                      Provide your wallet password to enable full endpoint testing including registration and solution submission tests.
+                    </p>
+                    <div className="flex gap-3 items-end">
+                      <div className="flex-1">
+                        <label className="text-xs text-gray-400 mb-2 block">
+                          Wallet Password (optional - for registration/submission tests)
+                        </label>
+                        <input
+                          type="password"
+                          value={diagnosticsPassword}
+                          onChange={(e) => setDiagnosticsPassword(e.target.value)}
+                          placeholder="Enter password for full tests..."
+                          className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          disabled={diagnosticsRunning}
+                        />
+                      </div>
+                      <Button
+                        onClick={async () => {
+                          setDiagnosticsRunning(true);
+                          setDiagnosticsResults(null);
+                          try {
+                            const response = await fetch('/api/diagnostics/test-endpoints', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                password: diagnosticsPassword || undefined,
+                                testAddressIndex: 0
+                              })
+                            });
+                            const data = await response.json();
+                            setDiagnosticsResults(data);
+                          } catch (error: any) {
+                            setDiagnosticsResults({
+                              success: false,
+                              error: error.message,
+                              results: []
+                            });
+                          } finally {
+                            setDiagnosticsRunning(false);
+                          }
+                        }}
+                        disabled={diagnosticsRunning}
+                        variant="primary"
+                        size="lg"
+                      >
+                        {diagnosticsRunning ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Running Tests...
+                          </>
+                        ) : (
+                          <>
+                            <Activity className="w-4 h-4" />
+                            Run Diagnostics
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Results Display */}
+                  {diagnosticsResults && (
+                    <div className="space-y-4">
+                      {/* Summary Card */}
+                      {diagnosticsResults.summary && (
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <div className="p-4 bg-gray-800 rounded-lg">
+                            <p className="text-xs text-gray-400 mb-1">Total Tests</p>
+                            <p className="text-2xl font-bold text-white">{diagnosticsResults.summary.totalTests}</p>
+                          </div>
+                          <div className="p-4 bg-green-900/20 border border-green-700/50 rounded-lg">
+                            <p className="text-xs text-gray-400 mb-1">Successful</p>
+                            <p className="text-2xl font-bold text-green-400">{diagnosticsResults.summary.successful}</p>
+                          </div>
+                          <div className="p-4 bg-red-900/20 border border-red-700/50 rounded-lg">
+                            <p className="text-xs text-gray-400 mb-1">Failed</p>
+                            <p className="text-2xl font-bold text-red-400">{diagnosticsResults.summary.failed}</p>
+                          </div>
+                          <div className="p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                            <p className="text-xs text-gray-400 mb-1">Health</p>
+                            <p className="text-2xl font-bold text-blue-400">{diagnosticsResults.summary.healthPercentage}%</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Test Results */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-lg font-semibold text-white">Test Results</h3>
+                          <Button
+                            onClick={() => {
+                              const resultsText = JSON.stringify(diagnosticsResults, null, 2);
+                              navigator.clipboard.writeText(resultsText);
+                            }}
+                            variant="outline"
+                            size="sm"
+                          >
+                            <Copy className="w-4 h-4 mr-2" />
+                            Copy Full Report
+                          </Button>
+                        </div>
+
+                        {diagnosticsResults.results?.map((result: any, index: number) => (
+                          <div
+                            key={index}
+                            className={cn(
+                              'p-4 rounded-lg border',
+                              result.success
+                                ? 'bg-green-900/10 border-green-700/50'
+                                : result.error?.includes('Skipped')
+                                ? 'bg-gray-800/50 border-gray-700'
+                                : 'bg-red-900/10 border-red-700/50'
+                            )}
+                          >
+                            <div className="flex items-start justify-between mb-2">
+                              <div className="flex items-center gap-3">
+                                {result.success ? (
+                                  <CheckCircle2 className="w-5 h-5 text-green-400" />
+                                ) : result.error?.includes('Skipped') ? (
+                                  <Info className="w-5 h-5 text-gray-400" />
+                                ) : (
+                                  <XCircle className="w-5 h-5 text-red-400" />
+                                )}
+                                <div>
+                                  <p className="font-semibold text-white">{result.endpoint}</p>
+                                  <p className="text-xs text-gray-400">
+                                    {result.method}
+                                    {result.endpoint === 'POST /solution' && result.success && ' - Endpoint reachable'}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                {result.statusCode && (
+                                  <p className={cn(
+                                    "text-sm font-mono font-semibold",
+                                    result.success ? "text-green-400" : "text-red-400"
+                                  )}>
+                                    {result.statusCode}
+                                  </p>
+                                )}
+                                {result.responseTime && (
+                                  <p className="text-xs text-gray-400">{result.responseTime}ms</p>
+                                )}
+                              </div>
+                            </div>
+
+                            {result.error && (
+                              <div className="mt-2 p-3 bg-black/30 rounded border border-gray-700">
+                                <p className="text-xs font-semibold text-red-400 mb-1">Error:</p>
+                                <p className="text-xs font-mono text-gray-300 break-all">{result.error}</p>
+                              </div>
+                            )}
+
+                            {result.responseData && !result.error?.includes('Skipped') && (
+                              <details className="mt-2">
+                                <summary className="text-xs text-blue-400 cursor-pointer hover:text-blue-300">
+                                  View Response Data
+                                </summary>
+                                <div className="mt-2 p-3 bg-black/30 rounded border border-gray-700">
+                                  <pre className="text-xs font-mono text-gray-300 overflow-auto max-h-48">
+                                    {JSON.stringify(result.responseData, null, 2)}
+                                  </pre>
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Diagnostic Info */}
+                      {diagnosticsResults.diagnosticInfo && (
+                        <div className="p-4 bg-gray-800 rounded-lg">
+                          <h3 className="text-sm font-semibold text-gray-400 mb-3">Diagnostic Information</h3>
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">Wallet Loaded:</span>
+                              <span className={diagnosticsResults.diagnosticInfo.walletLoaded ? "text-green-400" : "text-red-400"}>
+                                {diagnosticsResults.diagnosticInfo.walletLoaded ? 'Yes' : 'No'}
+                              </span>
+                            </div>
+                            {diagnosticsResults.diagnosticInfo.testAddress && (
+                              <>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">Test Address Index:</span>
+                                  <span className="text-white font-mono">{diagnosticsResults.diagnosticInfo.testAddress.index}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">Test Address:</span>
+                                  <span className="text-white font-mono text-xs">{diagnosticsResults.diagnosticInfo.testAddress.bech32.slice(0, 20)}...</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">Address Registered:</span>
+                                  <span className={diagnosticsResults.diagnosticInfo.testAddress.registered ? "text-green-400" : "text-yellow-400"}>
+                                    {diagnosticsResults.diagnosticInfo.testAddress.registered ? 'Yes' : 'No'}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                            {diagnosticsResults.diagnosticInfo.averageLatency && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-400">Average Latency:</span>
+                                <span className={cn(
+                                  "font-semibold",
+                                  diagnosticsResults.diagnosticInfo.averageLatency < 1000 ? "text-green-400" :
+                                  diagnosticsResults.diagnosticInfo.averageLatency < 2000 ? "text-yellow-400" :
+                                  "text-red-400"
+                                )}>
+                                  {diagnosticsResults.diagnosticInfo.averageLatency}ms
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Copy Instructions */}
+                      <div className="p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                        <div className="flex items-start gap-3">
+                          <Info className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-sm font-semibold text-blue-400 mb-1">Share with Support</p>
+                            <p className="text-xs text-gray-400">
+                              If you're experiencing issues, click "Copy Full Report" above and share the results with our support team.
+                              This will help us diagnose and resolve your problem quickly.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Mining Logs Section */}
             <Card variant="bordered">
               <CardHeader>
                 <div className="flex flex-col gap-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-xl flex items-center gap-2">
                       <Terminal className="w-5 h-5 text-blue-400" />
-                      Mining Log
+                      Mining Logs
                     </CardTitle>
                     <div className="flex items-center gap-2">
-                      {/* Follow/Unfollow Toggle */}
                       <Button
                         variant={autoFollow ? "default" : "ghost"}
                         size="sm"
@@ -3706,7 +3961,6 @@ function MiningDashboardContent() {
                         <span className="text-xs">{autoFollow ? 'Following' : 'Paused'}</span>
                       </Button>
 
-                      {/* Size Toggle */}
                       <div className="flex gap-1 bg-gray-800 rounded p-1">
                         <button
                           onClick={() => setLogHeight('small')}
@@ -3740,7 +3994,6 @@ function MiningDashboardContent() {
                         </button>
                       </div>
 
-                      {/* Collapse Toggle */}
                       <Button
                         variant="ghost"
                         size="sm"

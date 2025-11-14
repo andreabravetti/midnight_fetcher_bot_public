@@ -34,14 +34,19 @@ export async function GET() {
     // Build address list from receipts
     const enrichedAddresses = Array.from(addressesByIndex.entries())
       .map(([index, data]) => {
+        // IMPORTANT: If an address has submitted solutions, it MUST be registered
+        // We can't submit solutions without being registered first
+        const hasSolutions = (solutionsByAddress.get(data.bech32) || 0) > 0;
+
         // Check if we have orchestrator data for additional info
-        let registered = false;
+        let registered = hasSolutions; // Default to true if address has solutions
         let solvedCurrentChallenge = false;
 
         if (addressData) {
           const orchestratorAddr = addressData.addresses.find((a: any) => a.index === index);
           if (orchestratorAddr) {
-            registered = orchestratorAddr.registered || false;
+            // If orchestrator says registered, trust it; if not but we have solutions, we know it's registered
+            registered = orchestratorAddr.registered || hasSolutions;
             solvedCurrentChallenge = currentChallengeId
               ? addressData.solvedAddressChallenges.get(data.bech32)?.has(currentChallengeId) || false
               : false;
