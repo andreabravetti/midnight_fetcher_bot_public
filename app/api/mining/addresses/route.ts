@@ -5,8 +5,12 @@ import { WalletManager } from '@/lib/wallet/manager';
 import * as fs from 'fs';
 import * as path from 'path';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    // Check if we should include all registered addresses or just those with receipts
+    const { searchParams } = new URL(request.url);
+    const includeAll = searchParams.get('includeAll') === 'true';
+
     // Get all receipts first to build address list
     const receipts = receiptsLogger.readReceipts();
 
@@ -31,8 +35,27 @@ export async function GET() {
     const addressData = miningOrchestrator.getAddressesData();
     const currentChallengeId = addressData?.currentChallengeId || null;
 
-    // Build address list from receipts
-    const enrichedAddresses = Array.from(addressesByIndex.entries())
+    let enrichedAddresses;
+
+    if (includeAll && addressData) {
+      // Include all addresses from orchestrator (registered addresses)
+      enrichedAddresses = addressData.addresses.map((addr: any) => {
+        const hasSolutions = (solutionsByAddress.get(addr.bech32) || 0) > 0;
+        const solvedCurrentChallenge = currentChallengeId
+          ? addressData.solvedAddressChallenges.get(addr.bech32)?.has(currentChallengeId) || false
+          : false;
+
+        return {
+          index: addr.index,
+          bech32: addr.bech32,
+          registered: addr.registered || hasSolutions,
+          solvedCurrentChallenge,
+          totalSolutions: solutionsByAddress.get(addr.bech32) || 0,
+        };
+      }).sort((a: any, b: any) => a.index - b.index);
+    } else {
+      // Build address list from receipts only
+      enrichedAddresses = Array.from(addressesByIndex.entries())
       .map(([index, data]) => {
         // Check if we have orchestrator data for additional info
         let registered = false;
@@ -57,6 +80,7 @@ export async function GET() {
         };
       })
       .sort((a, b) => a.index - b.index); // Sort by index
+    }
 
     // Calculate summary stats
     const summary = {

@@ -39,7 +39,7 @@ class MiningOrchestrator extends EventEmitter {
   private cpuUsage = 0;
   private lastCpuCheck: { idle: number; total: number } | null = null;
   private lastCpuCalculation = 0; // Timestamp of last CPU calculation
-  private readonly CPU_UPDATE_INTERVAL = 3000; // Update CPU reading every 3 seconds
+  private readonly CPU_UPDATE_INTERVAL = 10000; // Update CPU reading every 10 seconds
   private cpuReadings: number[] = []; // Store last N CPU readings for smoothing
   private readonly CPU_SMOOTHING_WINDOW = 5; // Number of readings to average
   private addressesProcessedCurrentChallenge = new Set<number>(); // Track which address indexes have processed current challenge
@@ -1177,7 +1177,7 @@ class MiningOrchestrator extends EventEmitter {
       const pauseKey = `${addr.bech32}:${challengeId}`;
       if (this.pausedAddresses.has(pauseKey)) {
         // Wait a bit and check again
-        await this.sleep(100);
+        await this.sleep(20);
         continue;
       }
 

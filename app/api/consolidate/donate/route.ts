@@ -40,8 +40,8 @@ export async function POST(request: NextRequest) {
 
     try {
       const response = await axios.post(url, {}, {
-        timeout: 30000,
-        validateStatus: (status) => status < 500,
+        timeout: 30000, // 30 second timeout
+        validateStatus: () => true, // Accept all status codes, handle them manually
       });
 
       console.log('[Consolidate API] Server response:', {
@@ -73,13 +73,44 @@ export async function POST(request: NextRequest) {
           sourceAddress,
           destinationAddress,
         });
-      } else {
+      }
+
+      // Handle 409 Conflict - already donated
+      else if (response.status === 409) {
+        const message = response.data?.message || response.data || 'Address already donated';
+        console.log('[Consolidate API] ⚠ Already donated:', message);
+
+        // Log as success with 0 solutions (not a real failure)
+        consolidationLogger.logConsolidation({
+          ts: new Date().toISOString(),
+          sourceAddress,
+          sourceIndex,
+          destinationAddress,
+          destinationIndex,
+          destinationMode: destinationMode || 'wallet',
+          solutionsConsolidated: 0,
+          message: typeof message === 'string' ? message : 'Already donated',
+          status: 'success',
+        });
+
+        // Return success to client (will be handled as "already consolidated")
+        return NextResponse.json({
+          success: false,
+          error: typeof message === 'string' ? message : 'Already donated to this address',
+          alreadyDonated: true,
+          sourceAddress,
+          destinationAddress,
+        });
+      }
+
+      // Handle other errors
+      else {
+        const errorMessage = response.data?.message || response.data || response.statusText || 'Server error';
         console.error('[Consolidate API] ✗ Server rejected consolidation:', {
           status: response.status,
           statusText: response.statusText,
           responseData: response.data,
-          message: response.data.message,
-          fullResponse: JSON.stringify(response.data, null, 2),
+          message: errorMessage,
         });
 
         // Log failed consolidation
@@ -91,35 +122,36 @@ export async function POST(request: NextRequest) {
           destinationIndex,
           destinationMode: destinationMode || 'wallet',
           solutionsConsolidated: 0,
-          message: response.data.message,
+          message: typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage),
           status: 'failed',
-          error: response.data.message || 'Server rejected consolidation request',
+          error: typeof errorMessage === 'string' ? errorMessage : 'Server rejected consolidation request',
         });
 
         return NextResponse.json(
           {
             success: false,
-            error: response.data.message || 'Server rejected consolidation request',
+            error: typeof errorMessage === 'string' ? errorMessage : 'Server rejected consolidation request',
             status: response.status,
-            details: response.data, // Include full response for debugging
+            details: response.data,
           },
-          { status: response.status }
+          { status: 200 } // Return 200 so client can handle the error gracefully
         );
       }
     } catch (axiosError: any) {
-      const errorMsg = axiosError.response?.data?.message || axiosError.message;
+      // Check if it's a timeout
+      const isTimeout = axiosError.code === 'ECONNABORTED' || axiosError.message?.includes('timeout');
+      const errorMsg = isTimeout
+        ? 'Midnight API request timed out after 30 seconds. The API may be slow or unresponsive.'
+        : (axiosError.response?.data?.message || axiosError.message);
       const statusCode = axiosError.response?.status || 500;
 
       console.error('[Consolidate API] ✗ Request failed:', {
         error: axiosError.message,
+        code: axiosError.code,
+        isTimeout,
         status: statusCode,
         responseData: axiosError.response?.data,
         responseText: axiosError.response?.statusText,
-        fullError: JSON.stringify({
-          message: axiosError.message,
-          code: axiosError.code,
-          response: axiosError.response?.data,
-        }, null, 2),
       });
 
       // Log failed consolidation
@@ -139,10 +171,11 @@ export async function POST(request: NextRequest) {
         {
           success: false,
           error: errorMsg,
+          isTimeout,
           status: statusCode,
-          details: axiosError.response?.data, // Include full response for debugging
+          details: axiosError.response?.data,
         },
-        { status: statusCode }
+        { status: 200 } // Return 200 so client can handle gracefully
       );
     }
   } catch (error: any) {
