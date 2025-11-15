@@ -368,40 +368,46 @@ async fn health_handler() -> HttpResponse {
 /// GET /stats - Get mining statistics and hash rate
 async fn stats_handler() -> HttpResponse {
     // Check if we need to reset hourly counters (prevent overflow)
-    {
-        let mut reset_lock = LAST_RESET_TIME.write().unwrap();
-        let now = Instant::now();
+    let mut reset_lock = LAST_RESET_TIME.write().unwrap();
+    let now = Instant::now();
 
-        let should_reset = if let Some(last_reset) = *reset_lock {
-            // Reset every hour
-            last_reset.elapsed() >= Duration::from_secs(3600)
-        } else {
-            // First time - initialize
-            true
-        };
+    let should_reset = if let Some(last_reset) = *reset_lock {
+        // Reset every hour
+        last_reset.elapsed() >= Duration::from_secs(3600)
+    } else {
+        // First time - initialize
+        true
+    };
 
-        if should_reset {
-            info!("Resetting hourly hash counter (prevents overflow)");
-            TOTAL_HASHES.store(0, Ordering::Relaxed);
-            *reset_lock = Some(now);
-        }
+    if should_reset {
+        info!("Resetting hourly hash counter (prevents overflow)");
+        TOTAL_HASHES.store(0, Ordering::Relaxed);
+        *reset_lock = Some(now);
     }
 
     let total_hashes = TOTAL_HASHES.load(Ordering::Relaxed);
     let solutions_found = SOLUTIONS_FOUND.load(Ordering::Relaxed);
     let mining_active = MINING_ACTIVE.load(Ordering::Relaxed);
 
-    let stats_lock = STATS_START_TIME.read().unwrap();
-    let (hash_rate, uptime_seconds) = if let Some(start_time) = *stats_lock {
-        let elapsed = start_time.elapsed().as_secs();
-        let rate = if elapsed > 0 {
+    // HASH RATE: Calculate using reset time (hourly counter)
+    let hash_rate = if let Some(reset_time) = *reset_lock {
+        let elapsed = reset_time.elapsed().as_secs();
+        if elapsed > 0 {
             total_hashes / elapsed
         } else {
             0
-        };
-        (rate, elapsed)
+        }
     } else {
-        (0, 0)
+        0
+    };
+    drop(reset_lock);
+
+    // UPTIME: Calculate using original start time (never reset)
+    let stats_lock = STATS_START_TIME.read().unwrap();
+    let uptime_seconds = if let Some(start_time) = *stats_lock {
+        start_time.elapsed().as_secs()
+    } else {
+        0
     };
     drop(stats_lock);
 
@@ -486,7 +492,7 @@ async fn start_mining_handler(req: web::Json<StartMiningRequest>) -> HttpRespons
 
     let start_time = Instant::now();
     let mut nonce_counter: u64 = (req.worker_id * 1_000_000_000); // Worker-specific nonce range
-    const BATCH_SIZE: usize = 10000; // Optimized batch size (4 workers × 10K = 40K total parallel hashing)
+    const BATCH_SIZE: usize = 1000; // OPTIMIZATION: Smaller batches = faster iteration, less wasted work when solution found
 
     loop {
         // OPTIMIZATION: Generate batch of nonces only (no preimage strings yet)

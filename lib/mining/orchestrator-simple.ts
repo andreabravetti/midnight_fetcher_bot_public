@@ -33,6 +33,7 @@ export class SimplifiedOrchestrator extends EventEmitter {
   private workers: WorkerState[] = [];
   private statsInterval: NodeJS.Timeout | null = null;
   private challengePollingInterval: NodeJS.Timeout | null = null;
+  private workerHealthCheckInterval: NodeJS.Timeout | null = null;
   private solvedAddresses: Set<string> = new Set(); // Addresses that found solution for current challenge
   private inProgressAddresses: Set<string> = new Set(); // Addresses currently being mined (prevents duplicate mining)
   private userSolutionsCount: number = 0; // Track non-dev-fee solutions
@@ -74,6 +75,9 @@ export class SimplifiedOrchestrator extends EventEmitter {
 
     // Start challenge polling (every 2 seconds)
     this.startChallengePolling();
+
+    // Start worker health check (every 5 seconds)
+    this.startWorkerHealthCheck();
 
     // Start stats monitoring (Worker 4 - every 10 seconds)
     this.startStatsMonitoring();
@@ -122,6 +126,11 @@ export class SimplifiedOrchestrator extends EventEmitter {
     if (this.statsInterval) {
       clearInterval(this.statsInterval);
       this.statsInterval = null;
+    }
+
+    if (this.workerHealthCheckInterval) {
+      clearInterval(this.workerHealthCheckInterval);
+      this.workerHealthCheckInterval = null;
     }
 
     // Reset worker flags
@@ -273,6 +282,25 @@ export class SimplifiedOrchestrator extends EventEmitter {
         Logger.error('mining','[SimplifiedOrchestrator] Failed to poll challenge:', error.message);
       }
     }, 2000); // Poll every 2 seconds
+  }
+
+  /**
+   * Monitor worker health and restart dead workers
+   */
+  private startWorkerHealthCheck(): void {
+    this.workerHealthCheckInterval = setInterval(async () => {
+      if (!this.isRunning || !this.currentChallenge || this.pendingChallenge) return;
+
+      // Check each mining worker
+      for (let workerId = 1; workerId <= this.NUM_MINING_WORKERS; workerId++) {
+        const isRunning = this.workerRunning.get(workerId);
+
+        if (!isRunning) {
+          Logger.warn('mining', `[SimplifiedOrchestrator] ⚠️ Worker ${workerId} is not running! Restarting...`);
+          this.startMiningWorkerLoop(workerId, this.currentChallenge);
+        }
+      }
+    }, 5000); // Check every 5 seconds
   }
 
   /**
