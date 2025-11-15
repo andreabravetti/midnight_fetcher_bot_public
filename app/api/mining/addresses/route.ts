@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { miningOrchestrator } from '@/lib/mining/orchestrator-simple';
 import { receiptsLogger } from '@/lib/storage/receipts-logger';
 import { WalletManager } from '@/lib/wallet/manager';
